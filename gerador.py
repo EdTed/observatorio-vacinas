@@ -11,7 +11,7 @@ from LeIA import SentimentIntensityAnalyzer
 import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import timedelta
-import google.generativeai as genai # NOVA IMPORTAÇÃO DA IA
+from google import genai
 
 # Configuração visual dos gráficos
 sns.set_theme(style="whitegrid")
@@ -23,49 +23,49 @@ HEADERS = {
 
 analyzer = SentimentIntensityAnalyzer()
 
-# CHAVES PUXADAS DO GITHUB SECRETS
+# CHAVES PUXADAS DO GITHUB SECRETS (ou hardcoded para testes locais)
 YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY")
 REDDIT_CLIENT_ID = os.environ.get("REDDIT_CLIENT_ID")
 REDDIT_CLIENT_SECRET = os.environ.get("REDDIT_CLIENT_SECRET")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") 
 KEYWORDS_NOTICIAS = ["vacina", "vacinação", "antivax", "movimento antivacina", "imunização"]
 KEYWORDS_DEBATE = ["vacina covid", "antivax brasil", "vacinação obrigatória", "efeito colateral vacina"]
 
 # -------------------------------------------------------------------
-# FUNÇÃO NOVA: RESUMO COM INTELIGÊNCIA ARTIFICIAL (GEMINI)
+# FUNÇÃO DE RESUMO GERAL COM IA (CAIXAS DO TOPO)
 # -------------------------------------------------------------------
 def gerar_resumo_ia(df_textos, sentimento):
     if not GEMINI_API_KEY:
-        return "⚠️ Chave do Gemini não configurada. Resumo gerado por IA indisponível."
+        return "⚠️ Chave do Gemini não configurada."
     
     if df_textos.empty:
-        return f"Não há comentários recentes suficientes para gerar um resumo {sentimento}."
+        return f"Não há comentários suficientes para gerar um resumo {sentimento}."
 
     try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-pro')
-        
-        # Junta os 30 textos mais relevantes para dar contexto à IA (evita estourar o limite)
+        client = genai.Client(api_key=GEMINI_API_KEY)
         textos_combinados = " \n- ".join(df_textos['texto'].astype(str).head(30).tolist())
         
         prompt = f"""
         Você é um analista de dados. Analise os seguintes comentários/notícias classificados como {sentimento}s sobre vacinas.
-        Crie um resumo direto de, NO MÁXIMO, 3 linhas explicando quais são os principais pontos, opiniões ou preocupações levantadas pelas pessoas.
-        Não use saudações, vá direto ao ponto.
+        Crie um resumo direto de, NO MÁXIMO, 3 linhas explicando os principais pontos levantados. Sem saudações.
         
         Textos:
         - {textos_combinados}
         """
         
-        resposta = model.generate_content(prompt)
-        return resposta.text.strip()
+        
+        response = client.models.generate_content(
+            model='gemini-3.6-flash',
+            contents=prompt,
+        
+        )
+        return response.text.strip()
     except Exception as e:
         return f"Erro ao gerar resumo com IA: {e}"
 
 
 # -------------------------------------------------------------------
-# MÓDULOS DE EXTRAÇÃO DE DADOS (Mantidos do seu código original)
+# MÓDULOS DE EXTRAÇÃO DE DADOS
 # -------------------------------------------------------------------
 def extrair_noticias_rss(termos, limite_por_termo=250):
     noticias = []
@@ -130,7 +130,7 @@ def classificar_sentimento_e_rotulo(texto):
     else: return c, "Neutro / Informativo"
 
 # -------------------------------------------------------------------
-# GERAÇÃO DA PÁGINA HTML (AGORA COM A CAIXA DE RESUMOS IA)
+# GERAÇÃO DA PÁGINA HTML (COM CARDS DE TAMANHOS UNIFORMES)
 # -------------------------------------------------------------------
 def gerar_dashboard_html(df, resumo_pos, resumo_neg):
     print("\n🌐 Gerando Dashboard HTML...")
@@ -157,26 +157,62 @@ def gerar_dashboard_html(df, resumo_pos, resumo_neg):
             .ai-neg { background: linear-gradient(135deg, #d90429, #ef233c); }
             .ai-box p { font-size: 1.05rem; font-weight: 500; line-height: 1.5; margin-bottom: 0;}
 
-            /* Gráficos e Listas (mantidos do original) */
+            /* Gráficos e Listas */
             .charts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px; margin-bottom: 4rem; }
             .chart-card { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); text-align: center; }
             .chart-card img { max-width: 100%; height: auto; border-radius: 4px; }
-            .top-lists-wrapper { display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 4rem; }
-            .top-list-box { flex: 1; min-width: 350px; background: white; padding: 25px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
-            .title-pos { color: #2b9348; border-bottom: 2px solid #2b9348; padding-bottom: 15px;}
-            .title-neg { color: #d90429; border-bottom: 2px solid #d90429; padding-bottom: 15px;}
-            .top-list { list-style: none; padding: 0; margin: 0; }
-            .top-list li { border-bottom: 1px solid #eee; padding: 15px 0; }
-            .top-list-item h4 { margin: 5px 0; font-size: 1.1rem; color: #222; }
-            .top-list-item p { font-size: 0.9rem; color: #555; margin: 10px 0; }
-            .date-stamp { font-size: 0.75rem; color: #888; display: block; margin-top: 5px; }
+            
+            .top-lists-wrapper { display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 4rem; align-items: flex-start; }
+            .top-list-box { flex: 1; min-width: 350px; background: transparent; padding: 0; }
+            
+            .title-pos { color: #2b9348; border-bottom: 2px solid #2b9348; padding-bottom: 15px; background: white; padding: 20px; border-radius: 8px 8px 0 0; margin: 0; box-shadow: 0 2px 4px rgba(0,0,0,0.02); }
+            .title-neg { color: #d90429; border-bottom: 2px solid #d90429; padding-bottom: 15px; background: white; padding: 20px; border-radius: 8px 8px 0 0; margin: 0; box-shadow: 0 2px 4px rgba(0,0,0,0.02); }
+            
+            .top-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 15px; margin-top: 15px; }
+            .top-list li { display: flex; }
+
+            /* CARDS COM ALTURA E TAMANHO UNIFORMES */
+            .news-card { 
+                background: white; 
+                padding: 20px; 
+                border-radius: 8px; 
+                box-shadow: 0 4px 6px rgba(0,0,0,0.04); 
+                border: 1px solid #eaeaea;
+                width: 100%;
+                display: flex;
+                flex-direction: column;
+                justify-content: space-between;
+                height: 220px; 
+                box-sizing: border-box;
+            }
+            
+            .news-card h4 { 
+                margin: 8px 0; 
+                font-size: 1rem; 
+                color: #222;
+                display: -webkit-box;
+                -webkit-line-clamp: 2;
+                -webkit-box-orient: vertical;
+                overflow: hidden;
+            }
+            
+            .news-card p { 
+                font-size: 0.9rem; 
+                color: #555; 
+                margin: 5px 0; 
+                line-height: 1.4;
+                display: -webkit-box;
+                -webkit-line-clamp: 3;
+                -webkit-box-orient: vertical;
+                overflow: hidden;
+            }
             
             /* Utilitários */
             .badge { padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; color: white; text-transform: uppercase; }
             .badge-positivo { background-color: #2b9348; }
             .badge-negativo { background-color: #d90429; }
             .badge-fonte { background-color: #333; margin-right: 5px;}
-            .read-more { color: #0056b3; text-decoration: none; font-weight: bold; font-size: 0.9rem; }
+            .read-more { color: #0056b3; text-decoration: none; font-weight: bold; font-size: 0.9rem; display: inline-block; margin-top: 5px;}
             footer { background-color: #222; color: white; text-align: center; padding: 2rem 0; margin-top: 3rem; }
         </style>
     </head>
@@ -209,7 +245,7 @@ def gerar_dashboard_html(df, resumo_pos, resumo_neg):
                 <div class="chart-card"><img src="grafico_distribuicao_sentimentos.png"></div>
             </div>
 
-            <!-- Caixas de TOP 10 (Últimos 7 dias) -->
+            <!-- Caixas de TOP 10 COM CARDS INDIVIDUAIS UNIFORMES -->
             <h2 class="section-title">Destaques da Semana</h2>
             <div class="top-lists-wrapper">
                 <div class="top-list-box">
@@ -231,16 +267,33 @@ def gerar_dashboard_html(df, resumo_pos, resumo_neg):
     hoje = pd.Timestamp.utcnow()
     df_7_dias = df[df["data_dt"] >= (hoje - pd.Timedelta(days=7))]
 
+# --- NOVO: REMOVE DUPLICATAS PELO LINK OU PELO TEXTO ---
+    
+    df_7_dias = df_7_dias.drop_duplicates(subset=["texto"])
+
     top_pos = df_7_dias.sort_values(by="score_sentimento", ascending=False).head(10)
     top_neg = df_7_dias.sort_values(by="score_sentimento", ascending=True).head(10)
 
     def formatar_lista(df_sub, badge_cls):
-        if df_sub.empty: return "<li><p><i>Nenhuma publicação encontrada.</i></p></li>"
+        if df_sub.empty: return "<li><div class='news-card'><p><i>Nenhuma publicação encontrada.</i></p></div></li>"
         html = ""
         for _, row in df_sub.iterrows():
-            titulo = str(row['titulo'])[:70] + "..." if len(str(row['titulo']))>70 else str(row['titulo'])
-            texto = str(row['texto'])[:120] + "..." if len(str(row['texto']))>120 else str(row['texto'])
-            html += f"""<li><div class="top-list-item"><span class="badge {badge_cls}">Score: {row['score_sentimento']:.2f}</span><span class="badge badge-fonte">{row['fonte_tipo']}</span><h4>{titulo}</h4><p>{texto}</p><a href="{row['url']}" target="_blank" class="read-more">Ver &rarr;</a></div></li>"""
+            titulo = str(row['titulo'])[:90] + "..." if len(str(row['titulo']))>90 else str(row['titulo'])
+            texto = str(row['texto'])
+
+            html += f"""
+            <li>
+                <div class="news-card">
+                    <div>
+                        <span class="badge {badge_cls}">Score: {row['score_sentimento']:.2f}</span>
+                        <span class="badge badge-fonte">{row['fonte_tipo']}</span>
+                        <h4>{titulo}</h4>
+                        <p>{texto}</p>
+                    </div>
+                    <a href="{row['url']}" target="_blank" class="read-more">Ler na íntegra &rarr;</a>
+                </div>
+            </li>
+            """
         return html
 
     # Injetar os dados na página HTML
@@ -270,20 +323,17 @@ if __name__ == "__main__":
         df["data_dt"] = pd.to_datetime(df["data"], errors='coerce', utc=True)
         df["ano"] = df["data_dt"].dt.year
         
-        # --- NOVO: GERAR OS RESUMOS COM O GEMINI ANTES DE MONTAR O HTML ---
-        print("\n🧠 Acionando Gemini API para resumos abstrativos...")
+        print("\n🧠 Acionando Gemini API para resumos...")
         hoje = pd.Timestamp.utcnow()
         df_7_dias = df[df["data_dt"] >= (hoje - pd.Timedelta(days=7))]
         
-        # Filtra os dados por categoria para mandar pra IA
         df_pos = df_7_dias[df_7_dias['classificacao_preliminar'].str.contains("Positivo")]
         df_neg = df_7_dias[df_7_dias['classificacao_preliminar'].str.contains("Crítico|Antivax")]
         
-        # Pede para a IA ler as planilhas filtradas e criar o texto de 3 linhas
         resumo_positivo = gerar_resumo_ia(df_pos.sort_values(by="score_sentimento", ascending=False), "positivo")
         resumo_negativo = gerar_resumo_ia(df_neg.sort_values(by="score_sentimento", ascending=True), "negativo")
         
-        # Geração de gráficos (Original)
+        # Geração de gráficos
         plt.figure(figsize=(10, 6))
         sns.countplot(data=df, x="fonte_tipo", hue="classificacao_preliminar", palette="Set2")
         plt.tight_layout()
@@ -306,5 +356,4 @@ if __name__ == "__main__":
         plt.savefig("grafico_distribuicao_sentimentos.png", dpi=300)
         plt.close()
 
-        # Passa os textos resumidos pela IA para construir o HTML
         gerar_dashboard_html(df, resumo_positivo, resumo_negativo)
