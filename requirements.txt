@@ -4,6 +4,6 @@ feedparser
 pandas
 praw
 google-api-python-client
-LeIA
+leia-br
 matplotlib
 seaborn
