@@ -38,7 +38,6 @@ jobs:
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action Bot"
-          # Adiciona o HTML, os gráficos PNG e as tabelas de dados
           git add .
           git commit -m "Atualização diária automatizada" || echo "Sem mudanças hoje"
           git push
