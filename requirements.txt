@@ -8,3 +8,4 @@ leia-br
 matplotlib
 seaborn
 google-generativeai
+google-genai
