@@ -44,7 +44,7 @@ def gerar_resumo_ia(df_textos, sentimento):
 
     try:
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-pro')
         
         # Junta os 30 textos mais relevantes para dar contexto à IA (evita estourar o limite)
         textos_combinados = " \n- ".join(df_textos['texto'].astype(str).head(30).tolist())
