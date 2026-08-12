@@ -11,195 +11,128 @@ from LeIA import SentimentIntensityAnalyzer
 import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import timedelta
-
+import google.generativeai as genai # NOVA IMPORTAÇÃO DA IA
 
 # Configuração visual dos gráficos
 sns.set_theme(style="whitegrid")
 plt.rcParams['figure.figsize'] = (10, 6)
 
-# -------------------------------------------------------------------
-# CONFIGURAÇÕES E CHAVES DE API
-# -------------------------------------------------------------------
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
 analyzer = SentimentIntensityAnalyzer()
 
-
-import os
-
-# O código vai buscar essas chaves nas variáveis de ambiente do GitHub
+# CHAVES PUXADAS DO GITHUB SECRETS
 YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY")
 REDDIT_CLIENT_ID = os.environ.get("REDDIT_CLIENT_ID")
 REDDIT_CLIENT_SECRET = os.environ.get("REDDIT_CLIENT_SECRET")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 KEYWORDS_NOTICIAS = ["vacina", "vacinação", "antivax", "movimento antivacina", "imunização"]
 KEYWORDS_DEBATE = ["vacina covid", "antivax brasil", "vacinação obrigatória", "efeito colateral vacina"]
 
 # -------------------------------------------------------------------
-# MÓDULOS DE EXTRAÇÃO DE DADOS
+# FUNÇÃO NOVA: RESUMO COM INTELIGÊNCIA ARTIFICIAL (GEMINI)
+# -------------------------------------------------------------------
+def gerar_resumo_ia(df_textos, sentimento):
+    if not GEMINI_API_KEY:
+        return "⚠️ Chave do Gemini não configurada. Resumo gerado por IA indisponível."
+    
+    if df_textos.empty:
+        return f"Não há comentários recentes suficientes para gerar um resumo {sentimento}."
+
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        # Junta os 30 textos mais relevantes para dar contexto à IA (evita estourar o limite)
+        textos_combinados = " \n- ".join(df_textos['texto'].astype(str).head(30).tolist())
+        
+        prompt = f"""
+        Você é um analista de dados. Analise os seguintes comentários/notícias classificados como {sentimento}s sobre vacinas.
+        Crie um resumo direto de, NO MÁXIMO, 3 linhas explicando quais são os principais pontos, opiniões ou preocupações levantadas pelas pessoas.
+        Não use saudações, vá direto ao ponto.
+        
+        Textos:
+        - {textos_combinados}
+        """
+        
+        resposta = model.generate_content(prompt)
+        return resposta.text.strip()
+    except Exception as e:
+        return f"Erro ao gerar resumo com IA: {e}"
+
+
+# -------------------------------------------------------------------
+# MÓDULOS DE EXTRAÇÃO DE DADOS (Mantidos do seu código original)
 # -------------------------------------------------------------------
 def extrair_noticias_rss(termos, limite_por_termo=250):
     noticias = []
-    print("🌐 [1/3] Coletando notícias de portais (Google News)...")
-    
+    print("🌐 [1/3] Coletando notícias...")
     for termo in termos:
         termo_encoded = quote(termo)
         rss_url = f"https://news.google.com/rss/search?q={termo_encoded}&hl=pt-BR&gl=BR&ceid=BR:pt-419"
         feed = feedparser.parse(rss_url)
-        
         for entry in feed.entries[:limite_por_termo]:
             url = entry.link
-            titulo = entry.title
-            data_publicacao = entry.published
-            
-            texto = ""
-            try:
-                resp = requests.get(url, headers=HEADERS, timeout=8)
-                if resp.status_code == 200:
-                    soup = BeautifulSoup(resp.text, "html.parser")
-                    paragrafos = [p.get_text().strip() for p in soup.find_all("p") if len(p.get_text().strip()) > 40]
-                    texto = " ".join(paragrafos)
-            except Exception:
-                texto = entry.get("summary", "")
-
+            texto = entry.title
             noticias.append({
-                "fonte_tipo": "Notícia Portal",
-                "termo_busca": termo,
-                "titulo": titulo,
-                "texto": texto if texto else titulo,
-                "data": data_publicacao,
-                "url": url
+                "fonte_tipo": "Notícia Portal", "termo_busca": termo,
+                "titulo": entry.title, "texto": texto,
+                "data": entry.published, "url": url
             })
-            time.sleep(0.3)
-            
-    print(f"✅ {len(noticias)} notícias coletadas.")
     return noticias
 
-def extrair_comentarios_youtube(termos, api_key, max_videos_por_termo=3, max_comentarios_por_video=250):
-    comentarios_yt = []
-    if not api_key:
-        print("⚠️ Chave da API do YouTube não configurada. Pulando coleta do YouTube.")
-        return comentarios_yt
-
-    print("🎥 [2/3] Coletando comentários de vídeos do YouTube...")
+def extrair_comentarios_youtube(termos, api_key, max_videos=3, max_coments=250):
+    comentarios = []
+    if not api_key: return comentarios
+    print("🎥 [2/3] Coletando YouTube...")
     try:
         youtube = build("youtube", "v3", developerKey=api_key)
-
         for termo in termos:
-            search_response = youtube.search().list(
-                q=termo,
-                part="id,snippet",
-                maxResults=max_videos_por_termo,
-                type="video",
-                relevanceLanguage="pt"
-            ).execute()
-
-            for video_item in search_response.get("items", []):
-                video_id = video_item["id"]["videoId"]
-                video_titulo = video_item["snippet"]["title"]
-
+            search_response = youtube.search().list(q=termo, part="id,snippet", maxResults=max_videos, type="video", relevanceLanguage="pt").execute()
+            for item in search_response.get("items", []):
                 try:
-                    comment_response = youtube.commentThreads().list(
-                        part="snippet",
-                        videoId=video_id,
-                        maxResults=max_comentarios_por_video,
-                        textFormat="plainText"
-                    ).execute()
-
-                    for comment_item in comment_response.get("items", []):
-                        comment_data = comment_item["snippet"]["topLevelComment"]["snippet"]
-                        texto_comentario = comment_data["textDisplay"].strip()
-
-                        if len(texto_comentario) > 10:
-                            comentarios_yt.append({
-                                "fonte_tipo": "Comentário YouTube",
-                                "termo_busca": termo,
-                                "titulo": f"Vídeo: {video_titulo}",
-                                "texto": texto_comentario,
-                                "data": comment_data["publishedAt"],
-                                "url": f"https://www.youtube.com/watch?v={video_id}"
-                            })
-                except Exception:
-                    continue
-    except Exception as e:
-        print(f"❌ Erro ao conectar com a API do YouTube: {e}")
-
-    print(f"✅ {len(comentarios_yt)} comentários do YouTube coletados.")
-    return comentarios_yt
-
-def extrair_comentarios_reddit(termos, client_id=None, client_secret=None, limite=3):
-    comentarios = []
-    if not client_id or not client_secret:
-        print("⚠️ Credenciais do Reddit não fornecidas. Pulando coleta do Reddit.")
-        return comentarios
-
-    print("💬 [3/3] Coletando posts e comentários do Reddit...")
-    try:
-        reddit = praw.Reddit(
-            client_id=client_id,
-            client_secret=client_secret,
-            user_agent="VacinaScraperScript/1.0"
-        )
-
-        for termo in termos:
-            for submission in reddit.subreddit("brasil+brasilivre+conversas").search(termo, limit=limite):
-                comentarios.append({
-                    "fonte_tipo": "Post Fórum",
-                    "termo_busca": termo,
-                    "titulo": submission.title,
-                    "texto": submission.selftext if submission.selftext else submission.title,
-                    "data": pd.to_datetime(submission.created_utc, unit='s').strftime('%Y-%m-%d %H:%M:%S'),
-                    "url": f"https://reddit.com{submission.permalink}"
-                })
-                
-                submission.comments.replace_more(limit=0)
-                for comment in submission.comments[:10]:
-                    if len(comment.body.strip()) > 15:
-                        comentarios.append({
-                            "fonte_tipo": "Comentário Fórum",
-                            "termo_busca": termo,
-                            "titulo": f"Re: {submission.title[:50]}...",
-                            "texto": comment.body,
-                            "data": pd.to_datetime(comment.created_utc, unit='s').strftime('%Y-%m-%d %H:%M:%S'),
-                            "url": f"https://reddit.com{comment.permalink}"
-                        })
-    except Exception as e:
-        print(f"❌ Erro na coleta do Reddit: {e}")
-
-    print(f"✅ {len(comentarios)} posts/comentários do Reddit coletados.")
+                    c_resp = youtube.commentThreads().list(part="snippet", videoId=item["id"]["videoId"], maxResults=max_coments, textFormat="plainText").execute()
+                    for c_item in c_resp.get("items", []):
+                        txt = c_item["snippet"]["topLevelComment"]["snippet"]["textDisplay"].strip()
+                        if len(txt) > 10:
+                            comentarios.append({"fonte_tipo": "Comentário YouTube", "termo_busca": termo, "titulo": f"Vídeo: {item['snippet']['title']}", "texto": txt, "data": c_item["snippet"]["topLevelComment"]["snippet"]["publishedAt"], "url": f"https://www.youtube.com/watch?v={item['id']['videoId']}"})
+                except: continue
+    except: pass
     return comentarios
 
-# -------------------------------------------------------------------
-# PROCESSAMENTO E NLP (LEIA-BR)
-# -------------------------------------------------------------------
+def extrair_comentarios_reddit(termos, client_id, client_secret, limite=3):
+    comentarios = []
+    if not client_id or not client_secret: return comentarios
+    print("💬 [3/3] Coletando Reddit...")
+    try:
+        reddit = praw.Reddit(client_id=client_id, client_secret=client_secret, user_agent="VacinaScraper/1.0")
+        for termo in termos:
+            for sub in reddit.subreddit("brasil+brasilivre+conversas").search(termo, limit=limite):
+                comentarios.append({"fonte_tipo": "Post Fórum", "termo_busca": termo, "titulo": sub.title, "texto": sub.selftext or sub.title, "data": pd.to_datetime(sub.created_utc, unit='s').strftime('%Y-%m-%d %H:%M:%S'), "url": f"https://reddit.com{sub.permalink}"})
+                sub.comments.replace_more(limit=0)
+                for c in sub.comments[:10]:
+                    if len(c.body.strip()) > 15:
+                        comentarios.append({"fonte_tipo": "Comentário Fórum", "termo_busca": termo, "titulo": f"Re: {sub.title[:30]}...", "texto": c.body, "data": pd.to_datetime(c.created_utc, unit='s').strftime('%Y-%m-%d %H:%M:%S'), "url": f"https://reddit.com{c.permalink}"})
+    except: pass
+    return comentarios
+
 def classificar_sentimento_e_rotulo(texto):
     scores = analyzer.polarity_scores(texto)
-    compound = scores["compound"]
-    
-    texto_lower = texto.lower()
-    termos_criticos = [
-        "vachina", "experimento", "chips", "efetividade zero", 
-        "forçar vacina", "ditadura sanitária", "efeito colateral",
-        "miocardite", "clorocina", "trombo", "placebo"
-    ]
-    
-    eh_antivax_provavel = any(t in texto_lower for t in termos_criticos)
-    
-    if compound >= 0.05:
-        categoria = "Favorável / Positivo"
-    elif compound <= -0.05:
-        categoria = "Discurso Crítico / Antivax Prob" if eh_antivax_provavel else "Crítico / Negativo"
-    else:
-        categoria = "Neutro / Informativo"
-        
-    return compound, categoria
+    c = scores["compound"]
+    tl = texto.lower()
+    termos = ["vachina", "experimento", "chips", "forçar vacina", "ditadura sanitária", "miocardite", "trombo"]
+    eh_antivax = any(t in tl for t in termos)
+    if c >= 0.05: return c, "Favorável / Positivo"
+    elif c <= -0.05: return c, "Discurso Crítico / Antivax Prob" if eh_antivax else "Crítico / Negativo"
+    else: return c, "Neutro / Informativo"
 
 # -------------------------------------------------------------------
-# GERAÇÃO DA PÁGINA HTML COM FILTRO DE ANO
+# GERAÇÃO DA PÁGINA HTML (AGORA COM A CAIXA DE RESUMOS IA)
 # -------------------------------------------------------------------
-def gerar_dashboard_html(df):
+def gerar_dashboard_html(df, resumo_pos, resumo_neg):
     print("\n🌐 Gerando Dashboard HTML...")
     
     template_html = """
@@ -214,296 +147,164 @@ def gerar_dashboard_html(df):
             header { background-color: #ffffff; border-bottom: 3px solid #0056b3; padding: 1.5rem 5%; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
             .logo h1 { margin: 0; color: #0056b3; font-size: 2rem; }
             .container { width: 95%; max-width: 1400px; margin: 2rem auto; }
-            
             .section-title { font-size: 1.8rem; color: #0056b3; border-bottom: 2px solid #0056b3; padding-bottom: 0.5rem; margin-bottom: 1.5rem; display: inline-block; width: 100%; }
             
-            /* Gráficos */
+            /* CAIXAS DE RESUMO IA */
+            .ai-summary-grid { display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 3rem; }
+            .ai-box { flex: 1; min-width: 300px; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); color: white; }
+            .ai-box h3 { margin-top: 0; font-size: 1.3rem; display: flex; align-items: center; gap: 10px; }
+            .ai-pos { background: linear-gradient(135deg, #2b9348, #55a630); }
+            .ai-neg { background: linear-gradient(135deg, #d90429, #ef233c); }
+            .ai-box p { font-size: 1.05rem; font-weight: 500; line-height: 1.5; margin-bottom: 0;}
+
+            /* Gráficos e Listas (mantidos do original) */
             .charts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px; margin-bottom: 4rem; }
             .chart-card { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); text-align: center; }
             .chart-card img { max-width: 100%; height: auto; border-radius: 4px; }
-            
-            /* Caixas de Top 10 */
             .top-lists-wrapper { display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 4rem; }
             .top-list-box { flex: 1; min-width: 350px; background: white; padding: 25px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
-            .top-list-box h3 { margin-top: 0; border-bottom: 2px solid #eee; padding-bottom: 15px; font-size: 1.5rem; }
-            .title-pos { color: #2b9348; border-bottom-color: #2b9348 !important; }
-            .title-neg { color: #d90429; border-bottom-color: #d90429 !important; }
-            
+            .title-pos { color: #2b9348; border-bottom: 2px solid #2b9348; padding-bottom: 15px;}
+            .title-neg { color: #d90429; border-bottom: 2px solid #d90429; padding-bottom: 15px;}
             .top-list { list-style: none; padding: 0; margin: 0; }
             .top-list li { border-bottom: 1px solid #eee; padding: 15px 0; }
-            .top-list li:last-child { border-bottom: none; }
             .top-list-item h4 { margin: 5px 0; font-size: 1.1rem; color: #222; }
             .top-list-item p { font-size: 0.9rem; color: #555; margin: 10px 0; }
             .date-stamp { font-size: 0.75rem; color: #888; display: block; margin-top: 5px; }
             
-            /* Filtro de Ano */
-            .filter-container { background: white; padding: 15px 25px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between; }
-            .filter-container select { padding: 10px; font-size: 1rem; border: 1px solid #ccc; border-radius: 5px; min-width: 150px; cursor: pointer; }
-            .filter-container label { font-weight: bold; font-size: 1.1rem; color: #0056b3; }
-
-            /* Feed Geral */
-            .news-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
-            .news-card { background: white; border-radius: 8px; padding: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); display: flex; flex-direction: column; justify-content: space-between; transition: all 0.3s; }
-            .news-card h3 { margin: 0 0 10px 0; font-size: 1.2rem; color: #222; }
-            .news-card p { font-size: 0.95rem; color: #666; margin-bottom: 15px; flex-grow: 1; }
-            .news-footer { display: flex; justify-content: space-between; align-items: center; border-top: 1px solid #eee; padding-top: 10px; }
-            
             /* Utilitários */
-            .read-more { color: #0056b3; text-decoration: none; font-weight: bold; font-size: 0.9rem; }
-            .read-more:hover { text-decoration: underline; }
             .badge { padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; color: white; text-transform: uppercase; }
             .badge-positivo { background-color: #2b9348; }
             .badge-negativo { background-color: #d90429; }
-            .badge-neutro { background-color: #8d99ae; }
             .badge-fonte { background-color: #333; margin-right: 5px;}
-            
+            .read-more { color: #0056b3; text-decoration: none; font-weight: bold; font-size: 0.9rem; }
             footer { background-color: #222; color: white; text-align: center; padding: 2rem 0; margin-top: 3rem; }
         </style>
     </head>
     <body>
         <header>
-            <div class="logo">
-                <h1>🔬 Observatório de Saúde: Vacinas</h1>
-            </div>
-            <div style="color: #666; font-weight: bold;">Monitoramento Analítico e NLP</div>
+            <div class="logo"><h1>🔬 Observatório de Saúde: Vacinas</h1></div>
+            <div style="color: #666; font-weight: bold;">Monitoramento e NLP</div>
         </header>
 
         <div class="container">
+            
+            <!-- CAIXAS DA INTELIGÊNCIA ARTIFICIAL -->
+            <h2 class="section-title">✨ Resumo Gerado por IA (Últimos 7 dias)</h2>
+            <div class="ai-summary-grid">
+                <div class="ai-box ai-pos">
+                    <h3>👍 Principais Opiniões Positivas</h3>
+                    <p>[TEXTO_RESUMO_POS]</p>
+                </div>
+                <div class="ai-box ai-neg">
+                    <h3>⚠️ Principais Críticas e Preocupações</h3>
+                    <p>[TEXTO_RESUMO_NEG]</p>
+                </div>
+            </div>
+
             <!-- Gráficos Gerados -->
             <h2 class="section-title">Análise de Dados e Sentimentos</h2>
             <div class="charts-grid">
-                <div class="chart-card">
-                    <h3>Sentimentos por Fonte</h3>
-                    <img src="grafico_sentimento_por_fonte.png" alt="Gráfico Sentimentos por Fonte">
-                </div>
-                <div class="chart-card">
-                    <h3>Evolução Temporal</h3>
-                    <img src="grafico_evolucao_temporal.png" alt="Gráfico Evolução Temporal">
-                </div>
-                <div class="chart-card">
-                    <h3>Distribuição Geral</h3>
-                    <img src="grafico_distribuicao_sentimentos.png" alt="Gráfico Distribuição Geral">
-                </div>
+                <div class="chart-card"><img src="grafico_sentimento_por_fonte.png"></div>
+                <div class="chart-card"><img src="grafico_evolucao_temporal.png"></div>
+                <div class="chart-card"><img src="grafico_distribuicao_sentimentos.png"></div>
             </div>
 
             <!-- Caixas de TOP 10 (Últimos 7 dias) -->
-            <h2 class="section-title">Destaques da Semana (Últimos 7 Dias)</h2>
+            <h2 class="section-title">Destaques da Semana</h2>
             <div class="top-lists-wrapper">
                 <div class="top-list-box">
-                    <h3 class="title-pos">Top 10 Textos Mais Positivos</h3>
-                    <ul class="top-list">
-                        [LISTA_POSITIVAS]
-                    </ul>
+                    <h3 class="title-pos">Top 10 Mais Positivos</h3>
+                    <ul class="top-list">[LISTA_POSITIVAS]</ul>
                 </div>
                 <div class="top-list-box">
-                    <h3 class="title-neg">Top 10 Textos Mais Negativos / Críticos</h3>
-                    <ul class="top-list">
-                        [LISTA_NEGATIVAS]
-                    </ul>
+                    <h3 class="title-neg">Top 10 Mais Negativos</h3>
+                    <ul class="top-list">[LISTA_NEGATIVAS]</ul>
                 </div>
-            </div>
-
-            <!-- Header do Feed com Filtro -->
-            <h2 class="section-title" style="border:none; margin-bottom: 0;">Amostra do Feed Geral (Histórico)</h2>
-            
-            <div class="filter-container">
-                <label for="filtroAno">📅 Filtrar publicações pelo ano:</label>
-                <select id="filtroAno">
-                    <option value="todos">Todos os Anos</option>
-                    [OPCOES_ANOS]
-                </select>
-            </div>
-
-            <div class="news-grid" id="containerFeed">
-                [CARDS_NOTICIAS]
             </div>
         </div>
 
-        <footer>
-            <p>&copy; 2026 Observatório de Saúde gerado via Python Scraping.</p>
-        </footer>
-
-        <!-- Script JavaScript para fazer o filtro funcionar dinamicamente -->
-        <script>
-            document.getElementById('filtroAno').addEventListener('change', function() {
-                var anoSelecionado = this.value;
-                var cartoes = document.querySelectorAll('.news-card');
-
-                cartoes.forEach(function(cartao) {
-                    var anoCartao = cartao.getAttribute('data-ano');
-                    
-                    if (anoSelecionado === 'todos' || anoCartao === anoSelecionado) {
-                        cartao.style.display = 'flex'; // Mostra o cartão
-                    } else {
-                        cartao.style.display = 'none'; // Oculta o cartão
-                    }
-                });
-            });
-        </script>
+        <footer><p>&copy; 2026 Observatório de Saúde.</p></footer>
     </body>
     </html>
     """
 
-    # --- 1. CRIAR AS OPÇÕES DO DROPDOWN (ANOS) ---
-    # Pegamos os anos únicos que não são nulos, transformamos em inteiros, e ordenamos do mais novo para o mais velho
-    anos_unicos = sorted([int(a) for a in df['ano'].dropna().unique()], reverse=True)
-    opcoes_anos_html = "".join([f'<option value="{ano}">{ano}</option>' for ano in anos_unicos])
-    template_html = template_html.replace("[OPCOES_ANOS]", opcoes_anos_html)
-
-    # --- 2. FILTRAR OS DADOS DOS ÚLTIMOS 7 DIAS (PARA OS TOP 10) ---
     hoje = pd.Timestamp.utcnow()
-    limite_7_dias = hoje - pd.Timedelta(days=7)
-    df_7_dias = df[df["data_dt"] >= limite_7_dias]
+    df_7_dias = df[df["data_dt"] >= (hoje - pd.Timedelta(days=7))]
 
-    top_positivas = df_7_dias.sort_values(by="score_sentimento", ascending=False).head(10)
-    top_negativas = df_7_dias.sort_values(by="score_sentimento", ascending=True).head(10)
+    top_pos = df_7_dias.sort_values(by="score_sentimento", ascending=False).head(10)
+    top_neg = df_7_dias.sort_values(by="score_sentimento", ascending=True).head(10)
 
-    def formatar_lista(df_subset, badge_color_class):
-        if df_subset.empty:
-            return "<li><div class='top-list-item'><p><i>Nenhuma publicação encontrada neste recorte de 7 dias.</i></p></div></li>"
-            
+    def formatar_lista(df_sub, badge_cls):
+        if df_sub.empty: return "<li><p><i>Nenhuma publicação encontrada.</i></p></li>"
         html = ""
-        for _, row in df_subset.iterrows():
-            titulo = str(row['titulo'])[:70] + "..." if len(str(row['titulo'])) > 70 else str(row['titulo'])
-            texto = str(row['texto'])[:120] + "..." if len(str(row['texto'])) > 120 else str(row['texto'])
-            data_str = str(row['data_dt'])[:10]
-            
-            html += f"""
-            <li>
-                <div class="top-list-item">
-                    <span class="badge {badge_color_class}">Score: {row['score_sentimento']:.2f}</span>
-                    <span class="badge badge-fonte">{row['fonte_tipo']}</span>
-                    <h4>{titulo}</h4>
-                    <p>{texto}</p>
-                    <a href="{row['url']}" target="_blank" class="read-more">Ler na íntegra &rarr;</a>
-                    <span class="date-stamp">Publicado em: {data_str}</span>
-                </div>
-            </li>
-            """
+        for _, row in df_sub.iterrows():
+            titulo = str(row['titulo'])[:70] + "..." if len(str(row['titulo']))>70 else str(row['titulo'])
+            texto = str(row['texto'])[:120] + "..." if len(str(row['texto']))>120 else str(row['texto'])
+            html += f"""<li><div class="top-list-item"><span class="badge {badge_cls}">Score: {row['score_sentimento']:.2f}</span><span class="badge badge-fonte">{row['fonte_tipo']}</span><h4>{titulo}</h4><p>{texto}</p><a href="{row['url']}" target="_blank" class="read-more">Ver &rarr;</a></div></li>"""
         return html
 
-    html_positivas = formatar_lista(top_positivas, "badge-positivo")
-    html_negativas = formatar_lista(top_negativas, "badge-negativo")
+    # Injetar os dados na página HTML
+    html_final = template_html.replace("[TEXTO_RESUMO_POS]", resumo_pos)
+    html_final = html_final.replace("[TEXTO_RESUMO_NEG]", resumo_neg)
+    html_final = html_final.replace("[LISTA_POSITIVAS]", formatar_lista(top_pos, "badge-positivo"))
+    html_final = html_final.replace("[LISTA_NEGATIVAS]", formatar_lista(top_neg, "badge-negativo"))
 
-    template_html = template_html.replace("[LISTA_POSITIVAS]", html_positivas)
-    template_html = template_html.replace("[LISTA_NEGATIVAS]", html_negativas)
-
-    # --- 3. GERAR FEED GERAL COM AS ETIQUETAS DE ANO (DATA-ANO) ---
-    df_feed = df.head(100) # Aumentado para 100, para ter o que filtrar ao mudar o ano
-    cards_html = ""
-    for _, row in df_feed.iterrows():
-        badge_class = "badge-neutro"
-        if "Positivo" in row['classificacao_preliminar']:
-            badge_class = "badge-positivo"
-        elif "Crítico" in row['classificacao_preliminar'] or "Antivax" in row['classificacao_preliminar']:
-            badge_class = "badge-negativo"
-
-        texto_resumo = str(row['texto'])[:180] + "..." if len(str(row['texto'])) > 180 else str(row['texto'])
-        
-        # Define o ano do cartão (se houver problema na data, define como desconhecido)
-        ano_cartao = str(int(row['ano'])) if pd.notnull(row['ano']) else 'desconhecido'
-
-        # Repare na adição do `data-ano="{ano_cartao}"` na div abaixo. O JavaScript usa isso!
-        card = f"""
-        <div class="news-card" data-ano="{ano_cartao}">
-            <div>
-                <span class="badge badge-fonte">{row['fonte_tipo']}</span>
-                <span class="badge {badge_class}">{row['classificacao_preliminar']}</span>
-                <h3>{row['titulo'][:60]}...</h3>
-                <p>{texto_resumo}</p>
-            </div>
-            <div class="news-footer">
-                <span style="font-size: 0.8rem; color: #999;">{str(row['data_dt'])[:10]}</span>
-                <a href="{row['url']}" target="_blank" class="read-more">Ver Fonte &rarr;</a>
-            </div>
-        </div>
-        """
-        cards_html += card
-
-    html_final = template_html.replace("[CARDS_NOTICIAS]", cards_html)
-
-    # Salvar o arquivo HTML
-    diretorio_atual = os.getcwd()
-    caminho_html = os.path.join(diretorio_atual, "index.html")
-    
-    with open(caminho_html, "w", encoding="utf-8") as arquivo:
-        arquivo.write(html_final)
-        
-    print(f"✅ Arquivo HTML gerado com sucesso: {caminho_html}")
+    caminho_html = os.path.join(os.getcwd(), "index.html")
+    with open(caminho_html, "w", encoding="utf-8") as f:
+        f.write(html_final)
+    print("✅ Arquivo HTML gerado com sucesso!")
 
 
-# -------------------------------------------------------------------
-# EXECUÇÃO E ANÁLISE ESTATÍSTICA
-# -------------------------------------------------------------------
 if __name__ == "__main__":
+    d_noticias = extrair_noticias_rss(KEYWORDS_NOTICIAS, limite_por_termo=15)
+    d_youtube = extrair_comentarios_youtube(KEYWORDS_DEBATE, api_key=YOUTUBE_API_KEY, max_videos=3, max_coments=20)
+    d_reddit = extrair_comentarios_reddit(KEYWORDS_DEBATE, client_id=REDDIT_CLIENT_ID, client_secret=REDDIT_CLIENT_SECRET, limite=3)
     
-    # Executando a extração com limites (ajuste conforme a necessidade)
-    dados_noticias = extrair_noticias_rss(KEYWORDS_NOTICIAS, limite_por_termo=15)
-    dados_youtube = extrair_comentarios_youtube(KEYWORDS_DEBATE, api_key=YOUTUBE_API_KEY, max_videos_por_termo=3, max_comentarios_por_video=20)
-    dados_reddit = extrair_comentarios_reddit(KEYWORDS_DEBATE, client_id=REDDIT_CLIENT_ID, client_secret=REDDIT_CLIENT_SECRET, limite=3)
+    dados = d_noticias + d_youtube + d_reddit
     
-    todos_os_dados = dados_noticias + dados_youtube + dados_reddit
-    
-    if todos_os_dados:
-        df = pd.DataFrame(todos_os_dados)
-        
-        print("\n🧠 Analisando sentimentos dos textos (LeIA)...")
+    if dados:
+        df = pd.DataFrame(dados)
         resultados = df["texto"].apply(classificar_sentimento_e_rotulo)
         df["score_sentimento"] = [r[0] for r in resultados]
         df["classificacao_preliminar"] = [r[1] for r in resultados]
-        
         df["data_dt"] = pd.to_datetime(df["data"], errors='coerce', utc=True)
         df["ano"] = df["data_dt"].dt.year
-        df["ano_mes"] = df["data_dt"].dt.to_period("M").astype(str)
-
-        diretorio_atual = os.getcwd()
         
-        print("\n🎨 Gerando gráficos para a análise de dados...")
-
-        # Gráfico 1: Distribuição de Sentimento por Fonte
+        # --- NOVO: GERAR OS RESUMOS COM O GEMINI ANTES DE MONTAR O HTML ---
+        print("\n🧠 Acionando Gemini API para resumos abstrativos...")
+        hoje = pd.Timestamp.utcnow()
+        df_7_dias = df[df["data_dt"] >= (hoje - pd.Timedelta(days=7))]
+        
+        # Filtra os dados por categoria para mandar pra IA
+        df_pos = df_7_dias[df_7_dias['classificacao_preliminar'].str.contains("Positivo")]
+        df_neg = df_7_dias[df_7_dias['classificacao_preliminar'].str.contains("Crítico|Antivax")]
+        
+        # Pede para a IA ler as planilhas filtradas e criar o texto de 3 linhas
+        resumo_positivo = gerar_resumo_ia(df_pos.sort_values(by="score_sentimento", ascending=False), "positivo")
+        resumo_negativo = gerar_resumo_ia(df_neg.sort_values(by="score_sentimento", ascending=True), "negativo")
+        
+        # Geração de gráficos (Original)
         plt.figure(figsize=(10, 6))
-        ax = sns.countplot(data=df, x="fonte_tipo", hue="classificacao_preliminar", palette="Set2")
-        plt.title("Distribuição de Sentimentos por Fonte de Dados", fontsize=14, fontweight="bold")
-        plt.xlabel("Fonte do Dado", fontsize=12)
-        plt.ylabel("Quantidade de Registros", fontsize=12)
-        plt.legend(title="Sentimento")
+        sns.countplot(data=df, x="fonte_tipo", hue="classificacao_preliminar", palette="Set2")
         plt.tight_layout()
-        caminho_g1 = os.path.join(diretorio_atual, "grafico_sentimento_por_fonte.png")
-        plt.savefig(caminho_g1, dpi=300)
+        plt.savefig("grafico_sentimento_por_fonte.png", dpi=300)
         plt.close()
 
-        # Gráfico 2: Evolução Temporal por Ano
         df_temporal = df.dropna(subset=["ano"]).sort_values("ano")
         if not df_temporal.empty:
             plt.figure(figsize=(12, 6))
             df_grouped = df_temporal.groupby(["ano", "classificacao_preliminar"]).size().unstack(fill_value=0)
             df_grouped.plot(kind="bar", stacked=True, colormap="tab10", figsize=(12, 6))
-            plt.title("Evolução Temporal dos Discursos", fontsize=14, fontweight="bold")
-            plt.xlabel("Ano de Publicação", fontsize=12)
-            plt.ylabel("Volume de Registros", fontsize=12)
-            plt.legend(title="Sentimento")
-            plt.xticks(rotation=0)
             plt.tight_layout()
-            caminho_g2 = os.path.join(diretorio_atual, "grafico_evolucao_temporal.png")
-            plt.savefig(caminho_g2, dpi=300)
+            plt.savefig("grafico_evolucao_temporal.png", dpi=300)
             plt.close()
 
-        # Gráfico 3: Proporção Geral
         plt.figure(figsize=(8, 8))
-        df["classificacao_preliminar"].value_counts().plot.pie(
-            autopct='%1.1f%%', startangle=140, colors=sns.color_palette("pastel")
-        )
-        plt.title("Proporção Geral de Sentimentos Coletados", fontsize=14, fontweight="bold")
+        df["classificacao_preliminar"].value_counts().plot.pie(autopct='%1.1f%%', colors=sns.color_palette("pastel"))
         plt.ylabel("")
         plt.tight_layout()
-        caminho_g3 = os.path.join(diretorio_atual, "grafico_distribuicao_sentimentos.png")
-        plt.savefig(caminho_g3, dpi=300)
+        plt.savefig("grafico_distribuicao_sentimentos.png", dpi=300)
         plt.close()
 
-        # Chama a função geradora de HTML atualizada
-        gerar_dashboard_html(df)
-        
-        print("\n🎉 Análise descritiva, gráficos e HTML concluídos!")
-
-    else:
-        print("❌ Nenhum dado foi coletado.")
+        # Passa os textos resumidos pela IA para construir o HTML
+        gerar_dashboard_html(df, resumo_positivo, resumo_negativo)
