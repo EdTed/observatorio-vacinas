@@ -1,0 +1,9 @@
+requests
+beautifulsoup4
+feedparser
+pandas
+praw
+google-api-python-client
+LeIA
+matplotlib
+seaborn
