@@ -41,33 +41,40 @@ def gerar_resumo_ia(df_textos, sentimento):
     if df_textos.empty:
         return f"Não há comentários suficientes para gerar um resumo {sentimento}."
 
-    try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        textos_combinados = " \n- ".join(df_textos['texto'].astype(str).head(30).tolist())
+    # Tenta até 3 vezes caso o servidor do Google esteja ocupado (Erro 503 ou 429)
+    for tentativa in range(3):
+        try:
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            textos_combinados = " \n- ".join(df_textos['texto'].astype(str).head(50).tolist())
+            
+            prompt = f"""
+            Você é um analista de dados. Analise os seguintes comentários/notícias classificados como {sentimento}s sobre vacinas.
+            Crie um resumo direto de, NO MÁXIMO, 3 linhas explicando os principais pontos levantados. Sem saudações.
+            
+            Textos:
+            - {textos_combinados}
+            """
+            
+            # Usando o modelo 'gemini-1.5-flash', que é o mais estável disponível atualmente
+            response = client.models.generate_content(
+                model='gemini-1.5-flash',
+                contents=prompt,
+            )
+            return response.text.strip()
         
-        prompt = f"""
-        Você é um analista de dados. Analise os seguintes comentários/notícias classificados como {sentimento}s sobre vacinas.
-        Crie um resumo direto de, NO MÁXIMO, 3 linhas explicando os principais pontos levantados. Sem saudações.
-        
-        Textos:
-        - {textos_combinados}
-        """
-        
-        
-        response = client.models.generate_content(
-            model='gemini-3.6-flash',
-            contents=prompt,
-        
-        )
-        return response.text.strip()
-    except Exception as e:
-        return f"Erro ao gerar resumo com IA: {e}"
-
+        except Exception as e:
+            if tentativa < 2:
+                time.sleep(12)  # Aguarda 5 segundos antes de tentar novamente
+                continue
+            else:
+                # Se após 3 tentativas falhar, retorna uma mensagem amigável em vez do código de erro
+                return "Resumo temporariamente indisponível devido a alta demanda no servidor."
+                
 
 # -------------------------------------------------------------------
 # MÓDULOS DE EXTRAÇÃO DE DADOS
 # -------------------------------------------------------------------
-def extrair_noticias_rss(termos, limite_por_termo=250):
+def extrair_noticias_rss(termos, limite_por_termo=500):
     noticias = []
     print("🌐 [1/3] Coletando notícias...")
     for termo in termos:
@@ -84,7 +91,7 @@ def extrair_noticias_rss(termos, limite_por_termo=250):
             })
     return noticias
 
-def extrair_comentarios_youtube(termos, api_key, max_videos=3, max_coments=250):
+def extrair_comentarios_youtube(termos, api_key, max_videos=100, max_coments=25):
     comentarios = []
     if not api_key: return comentarios
     print("🎥 [2/3] Coletando YouTube...")
