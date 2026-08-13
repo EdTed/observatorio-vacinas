@@ -55,11 +55,15 @@ def gerar_resumo_ia(df_textos, sentimento):
             - {textos_combinados}
             """
             
-            # Usando o modelo 'gemini-1.5-flash', que é o mais estável disponível atualmente
+            # Usando o modelo 'gemini-3.6-flash', que é o mais estável disponível atualmente
+        
+
             response = client.models.generate_content(
-                model='gemini-1.5-flash',
-                contents=prompt,
+            model='gemini-3.6-flash',
+            contents=prompt,
+        
             )
+            
             return response.text.strip()
         
         except Exception as e:
